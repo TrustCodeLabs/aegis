@@ -2,6 +2,8 @@ package restadapter_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,4 +75,169 @@ func TestDecodeJSONBodyReturnsInvalidInputForMalformedJSON(t *testing.T) {
 	if !aegis.IsCode(err, aegis.CodeInvalidInput) {
 		t.Fatalf("expected invalid input error, got %v", err)
 	}
+}
+
+func TestHelpersAndErrorEncoders(t *testing.T) {
+	noInput, err := restadapter.NoInput[echoInput]()(httptest.NewRequest(http.MethodGet, "/echo", nil))
+	if err != nil {
+		t.Fatalf("no input binder: %v", err)
+	}
+	if noInput.Message != "" {
+		t.Fatalf("expected zero-value input, got %#v", noInput)
+	}
+
+	staticInput, err := restadapter.StaticInput(echoInput{Message: "static"})(httptest.NewRequest(http.MethodGet, "/echo", nil))
+	if err != nil {
+		t.Fatalf("static input binder: %v", err)
+	}
+	if staticInput.Message != "static" {
+		t.Fatalf("unexpected static input: %#v", staticInput)
+	}
+
+	status, code := restadapter.ClassifyError(aegis.NewKernelError(aegis.CodeResourceNotImplemented, "not ready", nil))
+	if status != http.StatusNotImplemented || code != "not_implemented" {
+		t.Fatalf("unexpected classified error: status=%d code=%q", status, code)
+	}
+
+	rec := httptest.NewRecorder()
+	restadapter.DefaultErrorEncoder(rec, httptest.NewRequest(http.MethodGet, "/echo", nil), aegis.NewKernelError(aegis.CodeInvalidInput, "bad request", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code": "invalid_input"`) {
+		t.Fatalf("unexpected default error body: %s", rec.Body.String())
+	}
+
+	cases := []struct {
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{err: aegis.NewKernelError(aegis.CodeCapabilityDenied, "forbidden", nil), wantStatus: http.StatusForbidden, wantCode: "forbidden"},
+		{err: aegis.NewKernelError(aegis.CodeConfirmationNeeded, "confirm", nil), wantStatus: http.StatusConflict, wantCode: "confirmation_required"},
+		{err: aegis.NewKernelError(aegis.CodeResourceNotFound, "missing", nil), wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{err: &aegis.DriverError{Kind: aegis.DriverErrorKindInvalidInput}, wantStatus: http.StatusBadRequest, wantCode: "invalid_input"},
+		{err: errors.New("boom"), wantStatus: http.StatusInternalServerError, wantCode: "internal_error"},
+	}
+
+	for _, tc := range cases {
+		status, code := restadapter.ClassifyError(tc.err)
+		if status != tc.wantStatus || code != tc.wantCode {
+			t.Fatalf("unexpected error classification for %v: status=%d code=%q", tc.err, status, code)
+		}
+	}
+}
+
+func TestNewJSONHandlerCoversErrorBranches(t *testing.T) {
+	kernelHandler := restadapter.NewJSONHandler(restadapter.Operation[echoInput]{
+		Operation: "missing.kernel",
+	})
+	kernelRec := httptest.NewRecorder()
+	kernelHandler.ServeHTTP(kernelRec, httptest.NewRequest(http.MethodGet, "/echo", nil))
+	if kernelRec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected bootstrap failure to return 500, got %d", kernelRec.Code)
+	}
+
+	contextErrHandler := restadapter.NewJSONHandler(restadapter.Operation[echoInput]{
+		Kernel: aegisMustBuildKernel(t),
+		ContextBuilder: func(ctx context.Context, r *http.Request) (context.Context, error) {
+			return nil, aegis.NewKernelError(aegis.CodeInvalidInput, "bad context", nil)
+		},
+	})
+	contextRec := httptest.NewRecorder()
+	contextErrHandler.ServeHTTP(contextRec, httptest.NewRequest(http.MethodGet, "/echo", nil))
+	if contextRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected context builder error to return 400, got %d", contextRec.Code)
+	}
+
+	var captured error
+	responseErrHandler := restadapter.NewJSONHandler(restadapter.Operation[struct{}]{
+		Kernel:    aegisMustBuildNoInputKernel(t),
+		Operation: "echo.no_input",
+		ContextBuilder: func(ctx context.Context, r *http.Request) (context.Context, error) {
+			return nil, nil
+		},
+		ResponseEncoder: func(w http.ResponseWriter, status int, payload any) error {
+			return io.ErrClosedPipe
+		},
+		ErrorEncoder: func(w http.ResponseWriter, r *http.Request, err error) {
+			captured = err
+			w.WriteHeader(http.StatusTeapot)
+		},
+	})
+	responseRec := httptest.NewRecorder()
+	responseErrHandler.ServeHTTP(responseRec, httptest.NewRequest(http.MethodGet, "/echo", nil))
+	if responseRec.Code != http.StatusTeapot {
+		t.Fatalf("expected custom error encoder to be used, got %d", responseRec.Code)
+	}
+	if !errors.Is(captured, io.ErrClosedPipe) {
+		t.Fatalf("expected response encoder error to be forwarded, got %v", captured)
+	}
+}
+
+func TestDecodeJSONBodyEdgeCases(t *testing.T) {
+	nilBodyReq := httptest.NewRequest(http.MethodPost, "/echo", nil)
+	nilBodyReq.Body = nil
+	if _, err := restadapter.DecodeJSONBody[echoInput](nilBodyReq); !aegis.IsCode(err, aegis.CodeInvalidInput) {
+		t.Fatalf("expected nil body to be invalid input, got %v", err)
+	}
+
+	emptyReq := httptest.NewRequest(http.MethodPost, "/echo", http.NoBody)
+	if _, err := restadapter.DecodeJSONBody[echoInput](emptyReq); !aegis.IsCode(err, aegis.CodeInvalidInput) {
+		t.Fatalf("expected empty body to be invalid input, got %v", err)
+	}
+
+	multiReq := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(`{"message":"one"}{"message":"two"}`))
+	if _, err := restadapter.DecodeJSONBody[echoInput](multiReq); !aegis.IsCode(err, aegis.CodeInvalidInput) {
+		t.Fatalf("expected multiple JSON values to be invalid, got %v", err)
+	}
+
+	unknownFieldReq := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(`{"message":"ok","extra":true}`))
+	if _, err := restadapter.DecodeJSONBody[echoInput](unknownFieldReq); !aegis.IsCode(err, aegis.CodeInvalidInput) {
+		t.Fatalf("expected unknown field payload to be invalid, got %v", err)
+	}
+}
+
+func aegisMustBuildKernel(t *testing.T) *aegis.Kernel {
+	t.Helper()
+
+	module := aegis.NewModule(
+		"echo",
+		aegis.DefineOperation[echoInput, map[string]any](aegis.OperationSpec[echoInput, map[string]any]{
+			Name: "echo.reply",
+			Handler: func(ctx context.Context, exec aegis.ExecutionContext, input echoInput) (map[string]any, error) {
+				return map[string]any{"message": input.Message}, nil
+			},
+		}),
+	)
+
+	kernel, err := aegis.NewBuilder(aegis.Config{}).
+		WithModule(module).
+		Build()
+	if err != nil {
+		t.Fatalf("build kernel: %v", err)
+	}
+	return kernel
+}
+
+func aegisMustBuildNoInputKernel(t *testing.T) *aegis.Kernel {
+	t.Helper()
+
+	module := aegis.NewModule(
+		"echo",
+		aegis.DefineOperation[struct{}, map[string]any](aegis.OperationSpec[struct{}, map[string]any]{
+			Name: "echo.no_input",
+			Handler: func(ctx context.Context, exec aegis.ExecutionContext, input struct{}) (map[string]any, error) {
+				return map[string]any{"ok": true}, nil
+			},
+		}),
+	)
+
+	kernel, err := aegis.NewBuilder(aegis.Config{}).
+		WithModule(module).
+		Build()
+	if err != nil {
+		t.Fatalf("build kernel: %v", err)
+	}
+	return kernel
 }
