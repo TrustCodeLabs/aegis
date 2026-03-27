@@ -11,6 +11,7 @@ type ContextBuilder func(ctx context.Context, r *http.Request) (context.Context,
 type InputBinder[I any] func(r *http.Request) (I, error)
 type ErrorEncoder func(w http.ResponseWriter, r *http.Request, err error)
 type ResponseEncoder func(w http.ResponseWriter, status int, payload any) error
+type HandlerFunc[I any] func(ctx context.Context, input I) (any, error)
 
 type Operation[I any] struct {
 	Kernel          *aegis.Kernel
@@ -22,7 +23,16 @@ type Operation[I any] struct {
 	ResponseEncoder ResponseEncoder
 }
 
-func NewJSONHandler[I any](cfg Operation[I]) http.Handler {
+type Endpoint[I any] struct {
+	ContextBuilder  ContextBuilder
+	InputBinder     InputBinder[I]
+	SuccessStatus   int
+	ErrorEncoder    ErrorEncoder
+	ResponseEncoder ResponseEncoder
+	Handler         HandlerFunc[I]
+}
+
+func NewJSONEndpoint[I any](cfg Endpoint[I]) http.Handler {
 	if cfg.InputBinder == nil {
 		cfg.InputBinder = NoInput[I]()
 	}
@@ -37,8 +47,8 @@ func NewJSONHandler[I any](cfg Operation[I]) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if cfg.Kernel == nil {
-			cfg.ErrorEncoder(w, r, aegis.NewKernelError(aegis.CodeBootstrapFailed, "kernel is nil", nil))
+		if cfg.Handler == nil {
+			cfg.ErrorEncoder(w, r, aegis.NewKernelError(aegis.CodeBootstrapFailed, "handler is nil", nil))
 			return
 		}
 
@@ -61,7 +71,7 @@ func NewJSONHandler[I any](cfg Operation[I]) http.Handler {
 			return
 		}
 
-		output, err := cfg.Kernel.Execute(ctx, cfg.Operation, input)
+		output, err := cfg.Handler(ctx, input)
 		if err != nil {
 			cfg.ErrorEncoder(w, r, err)
 			return
@@ -71,5 +81,21 @@ func NewJSONHandler[I any](cfg Operation[I]) http.Handler {
 			cfg.ErrorEncoder(w, r, err)
 			return
 		}
+	})
+}
+
+func NewJSONHandler[I any](cfg Operation[I]) http.Handler {
+	return NewJSONEndpoint(Endpoint[I]{
+		ContextBuilder:  cfg.ContextBuilder,
+		InputBinder:     cfg.InputBinder,
+		SuccessStatus:   cfg.SuccessStatus,
+		ErrorEncoder:    cfg.ErrorEncoder,
+		ResponseEncoder: cfg.ResponseEncoder,
+		Handler: func(ctx context.Context, input I) (any, error) {
+			if cfg.Kernel == nil {
+				return nil, aegis.NewKernelError(aegis.CodeBootstrapFailed, "kernel is nil", nil)
+			}
+			return cfg.Kernel.Execute(ctx, cfg.Operation, input)
+		},
 	})
 }

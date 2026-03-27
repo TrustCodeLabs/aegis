@@ -65,6 +65,54 @@ func TestNewJSONHandlerExecutesKernelOperation(t *testing.T) {
 	}
 }
 
+func TestNewJSONEndpointCoversSuccessBindAndHandlerErrors(t *testing.T) {
+	success := restadapter.NewJSONEndpoint(restadapter.Endpoint[echoInput]{
+		ContextBuilder: func(ctx context.Context, r *http.Request) (context.Context, error) {
+			return aegis.WithRequestID(ctx, "req-endpoint-1"), nil
+		},
+		InputBinder: restadapter.DecodeJSONBody[echoInput],
+		Handler: func(ctx context.Context, input echoInput) (any, error) {
+			return map[string]any{
+				"message":    input.Message,
+				"request_id": aegis.RequestIDFromContext(ctx),
+			}, nil
+		},
+		SuccessStatus: http.StatusAccepted,
+	})
+
+	successRec := httptest.NewRecorder()
+	success.ServeHTTP(successRec, httptest.NewRequest(http.MethodPost, "/endpoint", strings.NewReader(`{"message":"ok"}`)))
+	if successRec.Code != http.StatusAccepted {
+		t.Fatalf("expected endpoint success to return 202, got %d", successRec.Code)
+	}
+	if !strings.Contains(successRec.Body.String(), `"request_id": "req-endpoint-1"`) {
+		t.Fatalf("unexpected endpoint success body: %s", successRec.Body.String())
+	}
+
+	bindErr := restadapter.NewJSONEndpoint(restadapter.Endpoint[echoInput]{
+		InputBinder: restadapter.DecodeJSONBody[echoInput],
+		Handler: func(ctx context.Context, input echoInput) (any, error) {
+			return map[string]any{"ok": true}, nil
+		},
+	})
+	bindRec := httptest.NewRecorder()
+	bindErr.ServeHTTP(bindRec, httptest.NewRequest(http.MethodPost, "/endpoint", strings.NewReader(`{"message":`)))
+	if bindRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bind error to return 400, got %d", bindRec.Code)
+	}
+
+	handlerErr := restadapter.NewJSONEndpoint(restadapter.Endpoint[struct{}]{
+		Handler: func(ctx context.Context, input struct{}) (any, error) {
+			return nil, aegis.NewKernelError(aegis.CodePolicyDenied, "denied", nil)
+		},
+	})
+	handlerRec := httptest.NewRecorder()
+	handlerErr.ServeHTTP(handlerRec, httptest.NewRequest(http.MethodGet, "/endpoint", nil))
+	if handlerRec.Code != http.StatusForbidden {
+		t.Fatalf("expected handler error to return 403, got %d", handlerRec.Code)
+	}
+}
+
 func TestDecodeJSONBodyReturnsInvalidInputForMalformedJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(`{"message":`))
 
@@ -148,6 +196,16 @@ func TestNewJSONHandlerCoversErrorBranches(t *testing.T) {
 	contextErrHandler.ServeHTTP(contextRec, httptest.NewRequest(http.MethodGet, "/echo", nil))
 	if contextRec.Code != http.StatusBadRequest {
 		t.Fatalf("expected context builder error to return 400, got %d", contextRec.Code)
+	}
+
+	kernelErrHandler := restadapter.NewJSONHandler(restadapter.Operation[echoInput]{
+		Kernel:    aegisMustBuildKernel(t),
+		Operation: "echo.missing",
+	})
+	kernelErrRec := httptest.NewRecorder()
+	kernelErrHandler.ServeHTTP(kernelErrRec, httptest.NewRequest(http.MethodGet, "/echo", nil))
+	if kernelErrRec.Code != http.StatusNotFound {
+		t.Fatalf("expected missing operation to return 404, got %d", kernelErrRec.Code)
 	}
 
 	var captured error

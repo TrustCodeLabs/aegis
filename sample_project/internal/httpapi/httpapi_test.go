@@ -179,7 +179,7 @@ func TestRoutesServeCRUDAndAdminEndpoints(t *testing.T) {
 	assertStatus(http.MethodPost, "/api/admin/storage/mode", strings.NewReader(`{"mode":"unknown"}`), map[string]string{
 		"X-Role":       "admin",
 		"Content-Type": "application/json",
-	}, http.StatusInternalServerError)
+	}, http.StatusBadRequest)
 	assertStatus(http.MethodPost, "/api/admin/storage/mode", strings.NewReader(`{"mode":`), map[string]string{
 		"X-Role":       "admin",
 		"Content-Type": "application/json",

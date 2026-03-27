@@ -50,6 +50,17 @@ func (s *Server) executionContextFromRequest(ctx context.Context, r *http.Reques
 	return ctx, nil
 }
 
+func (s *Server) adminContextFromRequest(ctx context.Context, r *http.Request) (context.Context, error) {
+	ctx, err := s.executionContextFromRequest(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if roleFromRequest(r) != "admin" {
+		return nil, aegis.NewKernelError(aegis.CodePolicyDenied, "admin role is required for this endpoint", nil)
+	}
+	return ctx, nil
+}
+
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if roleFromRequest(r) == "admin" {
 		return true

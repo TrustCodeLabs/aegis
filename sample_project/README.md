@@ -15,14 +15,20 @@ O exemplo demonstra:
 - effect tracking e introspection
 - geração de `SKILLS.md`
 - multi-tenant e hot swap de storage (`layered` -> `direct`)
-- uso do adapter reutilizável [`aegis/restadapter`](../restadapter)
+- uso do adapter reutilizável [`aegis/restadapter`](../restadapter) tanto nas rotas de operações quanto nas rotas auxiliares JSON do sample
 
 ## Estrutura
 
 - `main.go`: entrypoint e bootstrap do servidor HTTP
 - `internal/app`: composição da aplicação, kernel Aegis e bindings de storage
-- `internal/httpapi`: handlers de demonstração e mapeamento HTTP -> operação usando o adapter REST do core
+- `internal/httpapi`: adapters de demonstração, mapeamento HTTP -> operação e endpoints auxiliares montados sobre o adapter REST do core
 - `internal/notes`: domínio de notas, módulo Aegis, effects e persistência em storage
+
+Estado real do sample:
+
+- é um projeto de demonstração, não um scaffold de produção
+- usa o `restadapter` do core para reduzir binding, execução e resposta JSON repetidos
+- mantém um endpoint de `SKILLS.md` com encoder customizado para `text/markdown`
 
 ## Headers úteis
 

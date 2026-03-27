@@ -147,9 +147,10 @@ func main() {
 
 [`restadapter/`](restadapter/) is intentionally small. It gives you:
 
+- generic JSON endpoint wrapping for small HTTP adapters
 - request binding for typed JSON inputs
 - context injection per request
-- `kernel.Execute(...)` dispatch
+- `kernel.Execute(...)` dispatch through `NewJSONHandler(...)`
 - JSON response writing
 - default HTTP error classification for kernel errors
 
@@ -161,7 +162,7 @@ It does not try to become a full HTTP framework.
 
 - `main.go`: server entrypoint
 - `internal/app`: application composition and kernel wiring
-- `internal/httpapi`: demo-only HTTP endpoints and request context mapping
+- `internal/httpapi`: demo-only HTTP adapters, request context mapping and route composition on top of [`restadapter/`](restadapter/)
 - `internal/notes`: sample domain and module definition
 
-The sample keeps example data and wiring, while reusable transport infrastructure lives in the framework core.
+The sample keeps only example wiring, demo endpoints and sample data. Reusable HTTP transport plumbing lives in the framework core under [`restadapter/`](restadapter/).
